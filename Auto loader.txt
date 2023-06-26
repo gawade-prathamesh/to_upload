@@ -1,0 +1,289 @@
+from delta.tables import *
+from pyspark.sql.window import Window
+from datetime import datetime
+from pyspark.sql.functions import dense_rank,col,expr,when,lit,StringType,current_timestamp,current_date
+import re
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+
+
+# Function to create an error entry into audit_error table
+def send_email(error_details):
+    sender_email ='18cs1050@mitsgwl.ac.in'
+    sender_password = 'xcmhkjjycrzsaeft'
+    receiver_email = 'kapil.patel@ext.icicibank.com'
+    subject = 'Update: Error in Azure Databricks Notebook_id:- '+dbutils.notebook.entry_point.getDbutils().notebook().getContext().tags().apply("notebookId")
+    notebook_error_url= "https://"+dbutils.notebook.entry_point.getDbutils().notebook().getContext().tags().apply("browserHostName")+"?o="+dbutils.notebook.entry_point.getDbutils().notebook().getContext().tags().apply("orgId")+"#notebook/"+dbutils.notebook.entry_point.getDbutils().notebook().getContext().tags().apply("notebookId")
+    message= 'There was an error in your Azure Databricks job run Notebook URL:-\n'+notebook_error_url+"\nWe’re sorry—there was an error in your run. \n"+"Error details:- \n"+error_details
+    msg = MIMEMultipart()
+    msg['From'] = sender_email
+    msg['To'] = receiver_email
+    msg['Subject'] = subject
+    msg.attach(MIMEText(message, 'plain'))
+    try:
+        with smtplib.SMTP('smtp.gmail.com', 587) as server:
+            server.starttls()
+            server.login(sender_email, sender_password)
+            server.send_message(msg)
+            #print('Email sent successfully!')
+    except smtplib.SMTPException as e:
+        print('Error sending email:', str(e))
+
+
+
+
+
+
+# Function to create an error entry into audit_error table
+def fill_autoloader_component_audit_error_reject(table,error_message,autoloader_checkpoint,batch_id,autoloader_input):
+    if(spark.sql(f"select tblSrNo,pipelinenm from autoloader_config_tbl where tablenm='{table}'").collect()):
+        tblSrNo,pipelinenm=spark.sql(f"select tblSrNo,pipelinenm from autoloader_config_tbl where tablenm='{table}'").collect()[0]
+    else:
+        tblSrNo,pipelinenm=0,table
+    if(autoloader_checkpoint!=''):
+        pipeline_run_id=str(spark.read.json(autoloader_checkpoint).collect()[0]).strip("Row()").split("=")[1].strip("''")
+    else:
+        pipeline_run_id="null"
+    error_source=autoloader_input
+    running_batch_id=batch_id
+    component_id= tblSrNo
+    error_datetime=str(datetime.now())
+    error_details="running_batch_id: "+str(running_batch_id)+"\npipeline_run_id: "+str(pipeline_run_id)+"\ncomponent_id: "+str(component_id)+"\nerror_source: "+error_source+"\n error_message: "+error_message+"\nerror_datetime: "+str(error_datetime)
+    send_email(error_details)
+    spark.sql(f"""INSERT INTO autoloader_component_audit_error_reject (running_batch_id,pipeline_run_id,component_id,error_source,error_message,error_datetime) VALUES ('{running_batch_id}', '{pipeline_run_id}','{component_id}','{error_source}',"{error_message}",'{error_datetime}')""")
+
+
+
+
+# Function to update SCD TYPE 2 record
+def scd_type2(df,key_column,output_path,table,autoloader_checkpoint,batchId,autoloader_input):
+    try:
+        starttime=datetime.now()
+        df=df.withColumn("start_date",lit(starttime).cast("timestamp") ).withColumn("end_date", lit('9999-12-31T00:00:00.000+0000').cast("timestamp"))
+        update_df=df.filter("op_type='U'")
+        insert_df=df.filter("op_type='I'")
+        delete_df=df.filter("op_type='D'").withColumn("end_date", lit(starttime).cast("timestamp"))
+        old_record_df=spark.read.load(output_path)
+        update_insert_df=old_record_df.join(update_df.select(*key_column),key_column,"inner").select(*old_record_df).filter("end_date = '9999-12-31T00:00:00.000+0000'").withColumn("end_date",current_timestamp()).withColumn("op_type",lit('I'))
+        return update_insert_df.union(update_df).union(insert_df).union(delete_df)
+    
+    except Exception as error_message:
+        fill_autoloader_component_audit_error_reject(table,str(error_message),autoloader_checkpoint,batchId,autoloader_input)
+
+
+
+
+
+
+
+# Function to create an entry into audit table
+def fill_batch_details(table,autoloader_checkpoint,batch_id,component_start_time,component_end_time,source_rows_count,num_inserted_rows,num_updated_rows,component_reject_count,component_delete_count,autoloader_input):
+    try:
+        table=table
+        if(spark.sql(f"select tblSrNo,pipelinenm from autoloader_config_tbl where tablenm='{table}'").collect()):
+            tblSrNo,pipelinenm=spark.sql(f"select tblSrNo,pipelinenm from autoloader_config_tbl where tablenm='{table}'").collect()[0]
+        else:
+            tblSrNo,pipelinenm=0,table
+        pipeline_run_id=str(spark.read.json(autoloader_checkpoint).collect()[0]).strip("Row()").split("=")[1].strip("''")
+        running_batch_id=batch_id
+        component_id= tblSrNo
+        pipeline_name= pipelinenm
+        component_run_duration= str(component_end_time-component_start_time)
+        component_start_time=str(component_start_time)
+        component_end_time=str(component_end_time)
+        business_date= str(datetime.now().date())
+        component_status= "y"
+        Remarks= "null"
+        spark.read.load('abfss://non-pii@ibcicdpsa401.dfs.core.windows.net/dev/retail/non-usecase/audit/componentaudit').createOrReplaceTempView("temp_component_table")
+        spark.sql(f"""INSERT INTO temp_component_table (running_batch_id, component_id, pipeline_run_id, pipeline_name, component_start_time, component_end_time, component_run_duration, component_source_count, component_insert_count, component_update_count,component_delete_count, component_reject_count, business_date, component_status, Remarks) VALUES ('{running_batch_id}', '{component_id}','{ pipeline_run_id}','{pipeline_name}','{component_start_time}','{component_end_time}','{component_run_duration}','{source_rows_count}','{num_inserted_rows}','{num_updated_rows}','{component_delete_count}','{component_reject_count}','{business_date}','{component_status}','{Remarks}')""")
+    except Exception as error_message:
+        fill_autoloader_component_audit_error_reject(table,str(error_message),autoloader_checkpoint,batch_id,autoloader_input)
+
+
+
+
+
+
+# Function to apply masking algorithm
+def annonymise(str1):
+    str2=str(str1).upper().replace('A','~01^').replace('B','~02^').replace('C','~03^').replace('D','~04^').replace('E','~05^').replace('F','~06^').replace('G','~07^').replace('H','~08^').replace('I','~09^').replace('J','~10^').replace('K','~11^').replace('L','~12^').replace('M','~13^').replace('N','~14^').replace('O','~15^').replace('P','~16^').replace('Q','~17^').replace('R','~18^').replace('S','~19^').replace('T','~20^').replace('U','~21^').replace('V','~22^').replace('W','~23^').replace('X','~24^').replace('Y','~25^').replace('Z','~26^')
+
+    str3=str2.replace('~01^','F').replace('~02^','L').replace('~03^','E').replace('~04^','R').replace('~05^','K').replace('~06^','D').replace('~07^','Q').replace('~08^','U').replace('~09^','B').replace('~10^','W').replace('~11^','J').replace('~12^','P').replace('~13^','C').replace('~14^','X').replace('~15^','T').replace('~16^','O').replace('~17^','I').replace('~18^','A').replace('~19^','V').replace('~20^','Y').replace('~21^','N').replace('~22^','H').replace('~23^','Z').replace('~24^','S').replace('~25^','M').replace('~26^','G')
+
+    str4=str3.replace('0','~FF^').replace('1','~GG^').replace('2','~HH^').replace('3','~II^').replace('4','~JJ^').replace('5','~KK^').replace('6','~LL^').replace('7','~MM^').replace('8','~NN^').replace('9','~OO^')
+    
+    str5=str4.replace('~FF^','8').replace('~GG^','3').replace('~HH^','2').replace('~II^','6').replace('~JJ^','0').replace('~KK^','1').replace('~LL^','7').replace('~MM^','5').replace('~NN^','9').replace('~OO^','4')
+    
+    return str5
+
+UDF_annonymise=udf(annonymise,StringType())
+
+
+
+
+
+
+# Function to list out all the filtration rules for the source
+def filter_rule(rule_list,table,autoloader_checkpoint,batchId,autoloader_input):
+    try:
+        rule_list_con=[]
+        rule_list_id=[]
+        condition=""
+        vid=""
+        multi_condition=""
+        multi_Id=""
+        for rule in rule_list:
+            validation_rule = rule[1]
+            validation_ID = str(rule[0])
+            validation_rule="("+validation_rule+")"
+            if(condition!=""):
+                rule_list_con.append(validation_rule)
+                rule_list_id.append(validation_ID)
+                condition+=" or " +validation_rule
+                validation_rule.replace
+                multi_condition+=" and " +validation_rule
+                multi_Id+=", "+validation_ID
+                rule_list_con.append(multi_condition)
+                rule_list_id.append(multi_Id)
+            else:
+                condition+=validation_rule
+                multi_condition+=validation_rule
+                multi_Id+=validation_ID
+                vid+=validation_ID
+                rule_list_con.append(condition)
+                rule_list_id.append(vid)
+        rule_list_con.reverse()   
+        rule_list_id.reverse()     
+        return expr(condition),rule_list_con,rule_list_id
+    except Exception as error_message:
+        fill_autoloader_component_audit_error_reject(table,str(error_message),autoloader_checkpoint,batchId,autoloader_input)
+
+
+
+
+
+# Function to Apply Filtration Rules
+def applyDQCheck(df,table_name,autoloader_applydqcheck_output,autoloader_checkpoint,batchId,autoloader_input):
+    try:
+        global component_reject_count
+        component_reject_count=0
+        tablename='recon_metadata2'
+        wh=table_name
+        df_qry=spark.sql(f"select Validation_ID,Validation_Rule from {tablename} WHERE TableName='{wh}' ")
+
+        if(df_qry.count()):
+            #print("1")
+            rules,rule_list,rule_id=filter_rule(df_qry.collect(),table_name,autoloader_checkpoint,batchId,autoloader_input)
+            df1=df.filter(~rules)
+            df_raw=df.filter(rules)
+            df_flitered=spark.createDataFrame([], df_raw.schema)
+            df_flitered=df_flitered.withColumn("reason",lit(1)).withColumn("Validation_Rule_ID",lit(1))
+
+            for r,i in enumerate(rule_list):
+                new_df=df_raw.filter(expr(i)).withColumn("reason", when(expr(i), i).otherwise("")).withColumn("Validation_Rule_ID",lit(rule_id[r]))
+                df_flitered= df_flitered.unionAll(new_df)
+            df_flitered.write.format("delta").mode("append").save(autoloader_applydqcheck_output)
+            component_reject_count=df_flitered.count()
+            return df1
+        else:
+            return df
+    except Exception as error_message:
+        fill_autoloader_component_audit_error_reject(table_name,str(error_message),autoloader_checkpoint,batchId,autoloader_input)
+
+
+
+
+
+
+# Function to create autoloader for source
+def create_autoloader(table,user,source,key_cols1,schm,PII_value,mask_list,scd_type,cloudfiles_format):
+
+    run_date=str(datetime.now().date())
+
+    autoloader_input="abfss://cdpgoldengate@ibcicdpsa401.dfs.core.windows.net/cdp/"+source+"/"+user+"/"+table
+    autoloader_output="abfss://cdpgoldengate@ibcicpdsa402.dfs.core.windows.net/cdp/"+source+"/"+user+"/"+PII_value+"/"+table
+    autoloader_checkpoint="abfss://test-2@ibcicdpsa401.dfs.core.windows.net/autoloader_test2cp/autoloader_checkpoint/"+"/"+source+"/"+user+"/"+table
+    autoloader_applydqcheck_output="abfss://test-2@ibcicdpsa401.dfs.core.windows.net/autoloader_test1/autoloader_output/applyDQCheck/"+source+"/"+user+"/"+PII_value+"/"+table
+    dbutils.fs.mkdirs(autoloader_output)
+    cnt=0
+    join_cond=''
+    for key in key_cols1:
+        if(cnt > 0):
+            join_cond += " and "
+        join_cond+="t."+key+"=s."+key
+        cnt+=1
+    
+    windowPartition = Window.partitionBy(*key_cols1).orderBy(col("current_ts").desc(),col("op_ts").desc())
+    
+    df = spark.readStream.format('cloudFiles') \
+    .option('cloudFiles.format', cloudfiles_format) \
+    .schema(schm) \
+    .option("cloudFiles.schemaLocation", autoloader_checkpoint)  \
+    .load(autoloader_input)
+    #print(join_cond)
+
+
+
+
+
+    # Function to mask all PII columns for source
+    def Mask(df,mask_list,table,autoloader_checkpoint,batchId,autoloader_input):
+        try:
+            for col in mask_list:
+                df=df.withColumn(col,UDF_annonymise((df[col].cast('string'))))
+            return df
+        except Exception as error_message:
+            fill_autoloader_component_audit_error_reject(table,str(error_message),autoloader_checkpoint,batchId,autoloader_input)
+    df=Mask(df,mask_list,table,autoloader_checkpoint,"0",autoloader_input)
+    #df.display() 
+
+    # Function to upsert microBatchOutputDF into Delta table using merge
+    def upsertToDelta(df,batchId, join_cond):
+        df=df.withColumn("dense_rank",dense_rank().over(windowPartition)).filter('dense_rank = 1')
+        df=df.toDF(*[col.lower() for col in df.columns])
+        component_start_time= datetime.now()
+        num_affected_rows=0
+        num_updated_rows=0
+        num_deleted_rows=0
+        num_inserted_rows=0
+        source_rows_count=df.count()
+        df=applyDQCheck(df,table,autoloader_applydqcheck_output,autoloader_checkpoint,batchId,autoloader_input)
+
+        try:
+            if(scd_type==1):
+                if (DeltaTable.isDeltaTable(spark, autoloader_output)):
+                    deltaTable = DeltaTable.forPath(spark, autoloader_output)                
+                    deltaTable.alias("t").merge(df.alias("s"),join_cond).whenMatchedDelete(condition = "s.op_type = 'D'").whenMatchedUpdateAll(condition = "s.op_type = 'U'").whenNotMatchedInsertAll(condition = "s.op_type != 'D'").execute()            
+                else:
+                    df.write.mode("overwrite").format("delta").save(autoloader_output)
+            
+                num_updated_rows=df.filter("op_type='U'").count()
+                num_inserted_rows=df.filter("op_type='I'").count()
+                num_deleted_rows=df.filter("op_type='D'").count()
+            else:
+                num_updated_rows=df.filter("op_type='U'").count()
+                num_inserted_rows=df.filter("op_type='I'").count()
+                num_deleted_rows=df.filter("op_type='D'").count()
+
+                if(DeltaTable.isDeltaTable(spark, autoloader_output)):
+                    df=scd_type2(df,key_cols1,autoloader_output,table,autoloader_checkpoint,batchId,autoloader_input)
+                    deltaTable = DeltaTable.forPath(spark,autoloader_output)
+                    deltaTable.alias("t").merge(df.alias("s"),join_cond).whenMatchedUpdate("s.op_type = 'D' and t.end_date='9999-12-31T00:00:00.000+0000' ",set ={"t.end_date":"s.start_date"}).whenMatchedUpdateAll(condition = "s.op_type = 'U' and t.end_date='9999-12-31T00:00:00.000+0000' ").whenNotMatchedInsertAll(condition = "s.op_type != 'D'").execute()
+                else:
+                    starttime=datetime.now()
+                    df=df.withColumn("start_date",lit(starttime).cast("timestamp") ).withColumn("end_date", lit('9999-12-31T00:00:00.000+0000').cast("timestamp"))
+                    update_df=df.filter("op_type='U'")
+                    insert_df=df.filter("op_type='I'")
+                    delete_df=df.filter("op_type='D'").withColumn("end_date", lit(starttime).cast("timestamp"))
+                    df=update_df.union(insert_df).union(delete_df)
+                    df.write.mode("overwrite").format("delta").save(autoloader_output)
+            component_end_time=  datetime.now()
+            if(source_rows_count>0):
+                fill_batch_details(table,autoloader_checkpoint,batchId,component_start_time,component_end_time,source_rows_count,num_inserted_rows,num_updated_rows,component_reject_count,num_deleted_rows,autoloader_input)            
+
+        except Exception as error_message:
+            fill_autoloader_component_audit_error_reject(table,str(error_message),autoloader_checkpoint,batchId,autoloader_input)
+            
+
+    query = (df.writeStream.format("delta").foreachBatch(lambda df,batchId:upsertToDelta(df,batchId,join_cond)).outputMode("update").option('checkpointLocation', autoloader_checkpoint).start())
