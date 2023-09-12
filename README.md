@@ -7,3 +7,6 @@ select to_date(LCHG_TIME,'YYYY-MM-DD"T"HH24:MI:SS') from tbaadm.daily_tran_heade
 SELECT TO_DATE(LCHG_TIME, 'YYYY-MM-DD"T"HH24:MI:SS') AS CONVERTED_TIME
 FROM tbaadm.daily_tran_header_table
 WHERE ROWNUM < 5;
+
+ERROR [HY000] [Microsoft][ODBC Oracle Wire Protocol driver][Oracle]ORA-01861: literal does not match format string
+
