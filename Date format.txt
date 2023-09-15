@@ -1,0 +1,55 @@
+22NOV2013	--- to_date(ACCOUNT_OPEN_DATE,'ddMMMyyyy') as AOD
+
+6/30/2017	--- to_date(ASOFDATE,'M/d/yyyy') AS newdate
+
+SELECT TO_DATE('2023-05-27', 'YYYY-MM-DD') AS converted_date
+FROM dual;
+
+SELECT TO_DATE('27/05/2023', 'DD/MM/YYYY') AS converted_date
+FROM dual;
+
+SELECT TO_DATE('20230527', 'YYYYMMDD') AS converted_date
+FROM dual;
+
+SELECT TO_DATE('05/27/2023 14:30:00', 'MM/DD/YYYY HH24:MI:SS') AS converted_date
+FROM dual;
+
+
+SELECT TO_DATE('27-May-2023', 'DD-Mon-YYYY') AS converted_date
+FROM dual;
+
+SELECT TO_DATE('05/27/23', 'MM/DD/YY') AS converted_date
+FROM dual;
+
+SELECT TO_DATE('2023-05-27 14:30:00', 'YYYY-MM-DD HH24:MI:SS') AS converted_date
+FROM dual;
+
+
+SELECT TO_DATE('2023-05-27 14:30:00', 'YYYY-MM-DD HH24:MI:SS') AS converted_date
+FROM dual;
+
+SELECT TO_DATE('27 May, 2023', 'DD Mon, YYYY') AS converted_date
+FROM dual;
+
+
+SELECT TO_DATE('May 27, 2023', 'Mon DD, YYYY') AS converted_date
+FROM dual;
+
+SELECT TO_DATE('27-05-23', 'DD-MM-YY') AS converted_date
+FROM dual;
+
+
+SELECT TO_TIMESTAMP('2023-05-27 14:30:00', 'YYYY-MM-DD HH24:MI:SS') AS converted_timestamp
+FROM dual;
+
+SELECT TO_TIMESTAMP('27/05/2023 02:30:00 PM', 'DD/MM/YYYY HH12:MI:SS AM') AS converted_timestamp
+FROM dual;
+
+SELECT TO_TIMESTAMP('05/27/2023 14:30:00.123456', 'MM/DD/YYYY HH:MI:SS.FF') AS converted_timestamp
+FROM dual;
+
+SELECT TO_TIMESTAMP('20230527143000', 'YYYYMMDDHH24MISS') AS converted_timestamp
+FROM dual;
+
+SELECT TO_TIMESTAMP('May 27, 2023 02:30:00 PM', 'Mon DD, YYYY HH12:MI:SS AM') AS converted_timestamp
+FROM dual;
